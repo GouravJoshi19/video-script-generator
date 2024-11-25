@@ -1,0 +1,8 @@
+pandas == 2.2.3
+instaloader == 4.14
+pyttsx3 == 2.98
+openai-whisper
+gTTS == 2.5.4
+requests == 2.32.3
+beautifulsoup4 == 4.12.3
+-e .
