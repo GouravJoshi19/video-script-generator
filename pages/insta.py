@@ -1,10 +1,12 @@
 import streamlit as st
 import instaloader
-import time
 import logging
 import datetime as dt
 import pandas as pd
+import re
+import os
 
+WORK_DIR='data'
 # Logger setup
 logging.basicConfig(level=logging.INFO)
 
@@ -16,25 +18,23 @@ if "last_scrape_time" not in st.session_state:
 # Instagram Scraper Class
 class InstagramScraper:
     def __init__(self):
-        self.loader = instaloader.Instaloader()
+        self.loader = instaloader.Instaloader(download_videos=True)
+        self.temp_dir = "temp_downloads"
+        os.makedirs(self.temp_dir, exist_ok=True) 
 
-    def authenticate(self, username: str, password: str):
+    def authenticate(self, username: str, password: str) -> bool:
         """Authenticate the user using provided Instagram credentials."""
         try:
             self.loader.login(username, password)
-            logging.info("Authentication successful!")
-            st.success("Authentication successful!")
+            return True
         except Exception as e:
             logging.error(f"Authentication failed: {e}")
-            st.error("Failed to authenticate. Please check your credentials.")
+            return False
 
-    def fetch_profile_info(self, username: str):
-        """Fetch details of the Instagram profile."""
+    def fetch_creator_content(self, username: str, max_posts: int = 10):
+        """Fetch content from a given Instagram creator's profile."""
         try:
-            # Get the profile from the username
             profile = instaloader.Profile.from_username(self.loader.context, username)
-
-            # Gather basic profile information
             profile_info = {
                 "Username": profile.username,
                 "Full Name": profile.full_name,
@@ -58,27 +58,49 @@ class InstagramScraper:
                 if len(posts_info) >= 10:  # Limit to 10 posts
                     break
 
-            return profile_info, posts_info
-
+                return profile_info, posts_info
         except Exception as e:
-            logging.error(f"Failed to fetch profile details for {username}: {e}")
-            st.error("Failed to fetch profile details. Please check the username.")
-            return None, None
+            logging.error(f"Content fetching failed: {e}")
+            return None
 
+    def download_post(self, url):
+            try:
+                # Extract the shortcode from the Instagram URL
+                shortcode = self.extract_shortcode(url)
+                if not shortcode:
+                    raise ValueError("Invalid Instagram URL. Could not extract shortcode.")
+
+                # Load the post using the shortcode
+                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+
+                # Download the post
+                self.loader.download_post(post, target=WORK_DIR)  # Save to 'downloads' folder
+                print(f"Post downloaded successfully: {shortcode}")
+
+            except Exception as e:
+                print(f"Error downloading the post: {e}")
+
+    @staticmethod
+    def extract_shortcode(url):
+        # Regex to extract shortcode from the URL
+        match = re.search(r"instagram\.com/p/([A-Za-z0-9_-]+)/?", url)
+        return match.group(1) if match else None
 
 def main():
     scraper = InstagramScraper()
 
     # Input fields for Instagram login credentials
-    instagram_username = st.text_input("Enter your Instagram username", type="default")
-    instagram_password = st.text_input("Enter your Instagram password", type="password")
+    instagram_username = str(st.text_input("Enter your Instagram username", type="default"))
+    instagram_password = str(st.text_input("Enter your Instagram password", type="password"))
 
-    if st.button("Login"):
-        with st.spinner("Authenticating..."):
-            scraper.authenticate(instagram_username, instagram_password)
+    if st.button("Authenticate"):
+        with st.spinner("Authentication"):
+            scraper.authenticate(instagram_username,instagram_password)
+            st.success("Authentication Successful")
 
     # Input field for Instagram profile username
     target_username = str(st.text_input("Enter the Instagram profile username to scrape"))
+
 
     # Check if enough time has passed since the last scrape
     now = dt.datetime.now()
@@ -98,7 +120,7 @@ def main():
             st.session_state.last_scrape_time = dt.datetime.now()
 
             # Fetch profile details
-            profile_info, posts_info = scraper.fetch_profile_info(target_username)
+            profile_info, posts_info = scraper.fetch_creator_content(target_username)
 
             if profile_info:
                 st.success("Profile details fetched successfully!")
@@ -117,34 +139,22 @@ def main():
                         comments = post.get("Comments", 0)
                         views = post.get("Views (if reel)", 0)
                         
-                        # Example timestamp generation (to be replaced with actual timestamp data)
-                        post_date = post.get("Timestamp", st.session_state.last_scrape_time - dt.timedelta(days=10))  
-                        
-                        # Calculate days since the post
-                        days_since_post = (st.session_state.last_scrape_time - post_date).days
-                        
                         # Calculate engagement score
                         engagement_score = (
-                            likes * WEIGHTS["likes"]
-                            + comments * WEIGHTS["comments"]
-                            + views * WEIGHTS["views"]
+                            views * WEIGHTS["views"]/
+                            (likes * WEIGHTS["likes"]
+                            + comments * WEIGHTS["comments"])
                         )
 
-                        # Calculate recency factor
-                        recency_factor = max(0, WEIGHTS["recency"] * (30 - days_since_post) / 30)
-
-                        # Calculate overall score
-                        overall_score = engagement_score + recency_factor
-
+                       
+                    
                         # Add data to the list
                         post_data.append({
                             "Caption": post.get("Caption", "No Caption"),
                             "Likes": likes,
                             "Comments": comments,
                             "Views (if reel)": views,
-                            "Engagement Score": round(engagement_score, 2),
-                            "Recency Factor": round(recency_factor, 2),
-                            "Overall Score": round(overall_score, 2),
+                            "Engagement Score": round(engagement_score, 2)
                         })
 
                     # Convert to a DataFrame for tabular display
@@ -155,10 +165,12 @@ def main():
                     st.dataframe(posts_df)
 
                     # Highlight the most successful post
-                    best_post = posts_df.loc[posts_df["Overall Score"].idxmax()]
+                    best_post = posts_df.loc[posts_df["Engagement Score"].idxmax()]
+                    scraper.download_post(best_post['Post URL'])
                     st.subheader("Most Successful Post")
                     st.write(f"**Caption**: {best_post['Caption']}")
-                    st.write(f"**Overall Score**: {best_post['Overall Score']:.2f}")
+                    st.write(f"**Overall Score**: {best_post['Engagement Score']:.2f}")
+                    
                 else:
                     st.info("No recent posts found for this profile.")
             else:
